@@ -22,6 +22,58 @@ const PYTHON_PATH =
 
 const MT5_TICKS_SCRIPT = path.join(__dirname, "mt5_ticks.py");
 
+function normalizeProfile(value) {
+  const normalized = String(value || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace("-", "_")
+    .replace(" ", "_")
+    .trim();
+
+  if (normalized.includes("SCALP")) return "SCALPING";
+  if (normalized.includes("SWING")) return "SWING";
+
+  return "DAY_TRADE";
+}
+
+function getProfileInfo(profile) {
+  if (profile === "SCALPING") {
+    return {
+      profile: "SCALPING",
+      label: "Scalping",
+      description: "Operações rápidas. Regras mais rígidas para tick, spread e candles.",
+      queryExample: "/scan?profile=SCALPING",
+    };
+  }
+
+  if (profile === "SWING") {
+    return {
+      profile: "SWING",
+      label: "Swing",
+      description: "Operações mais longas. Exige score maior e validação por tendência/reversão.",
+      queryExample: "/scan?profile=SWING",
+    };
+  }
+
+  return {
+    profile: "DAY_TRADE",
+    label: "Day Trade",
+    description: "Perfil equilibrado para operações intraday.",
+    queryExample: "/scan?profile=DAY_TRADE",
+  };
+}
+
+function getRequestedProfile(req) {
+  return normalizeProfile(
+    req.query.profile ||
+      req.query.mode ||
+      req.query.tipo ||
+      process.env.SIGNAL_PROFILE ||
+      "DAY_TRADE"
+  );
+}
+
 function runPythonScript(scriptPath) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -69,9 +121,64 @@ app.get("/", (req, res) => {
   res.json({
     status: "online",
     app: "SignalProAI Backend",
-    version: "1.1.0",
+    version: "1.2.0",
     dataSource: "MT5",
-    endpoints: ["/scan", "/ticks"],
+    defaultProfile: normalizeProfile(process.env.SIGNAL_PROFILE || "DAY_TRADE"),
+    profiles: [
+      getProfileInfo("SCALPING"),
+      getProfileInfo("DAY_TRADE"),
+      getProfileInfo("SWING"),
+    ],
+    endpoints: [
+      "/scan",
+      "/scan?profile=SCALPING",
+      "/scan?profile=DAY_TRADE",
+      "/scan?profile=SWING",
+      "/ticks",
+      "/profiles",
+    ],
+  });
+});
+
+app.get("/profiles", (req, res) => {
+  res.json({
+    success: true,
+    defaultProfile: normalizeProfile(process.env.SIGNAL_PROFILE || "DAY_TRADE"),
+    profiles: [
+      {
+        ...getProfileInfo("SCALPING"),
+        rules: {
+          minTradeScore: 86,
+          observeScore: 76,
+          maxTickAgeSeconds: 30,
+          maxWaitingMinutes: 45,
+          maxEntryDistancePercent: 0.6,
+          allowedSetups: ["SCALPING", "REVERSAO"],
+        },
+      },
+      {
+        ...getProfileInfo("DAY_TRADE"),
+        rules: {
+          minTradeScore: 88,
+          observeScore: 78,
+          maxTickAgeSeconds: 120,
+          maxWaitingMinutes: 120,
+          maxEntryDistancePercent: 1,
+          allowedSetups: ["TENDENCIA", "REVERSAO"],
+        },
+      },
+      {
+        ...getProfileInfo("SWING"),
+        rules: {
+          minTradeScore: 90,
+          observeScore: 80,
+          maxTickAgeSeconds: 900,
+          maxWaitingMinutes: 720,
+          maxEntryDistancePercent: 2,
+          allowedSetups: ["TENDENCIA", "REVERSAO"],
+        },
+      },
+    ],
   });
 });
 
@@ -94,11 +201,21 @@ app.get("/ticks", async (req, res) => {
 
 app.get("/scan", async (req, res) => {
   try {
-    const result = await scanMarket();
+    const profile = getRequestedProfile(req);
 
-    res.json(result);
+    const result = await scanMarket({
+      profile,
+      mode: profile,
+    });
+
+    res.json({
+      ...result,
+      requestedProfile: profile,
+      profileInfo: getProfileInfo(profile),
+    });
   } catch (error) {
     res.status(500).json({
+      success: false,
       error: "Erro ao executar scanner",
       details: error.message,
     });
@@ -108,4 +225,8 @@ app.get("/scan", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 SignalProAI Backend rodando em http://localhost:${PORT}`);
   console.log(`📡 Ticks MT5 disponíveis em http://localhost:${PORT}/ticks`);
+  console.log(`🔎 Scanner padrão em http://localhost:${PORT}/scan`);
+  console.log(`⚡ Scalping em http://localhost:${PORT}/scan?profile=SCALPING`);
+  console.log(`📊 Day Trade em http://localhost:${PORT}/scan?profile=DAY_TRADE`);
+  console.log(`📈 Swing em http://localhost:${PORT}/scan?profile=SWING`);
 });
