@@ -16,12 +16,18 @@ SYMBOL_MAP = {
 }
 
 TIMEFRAME_MAP = {
+    "candles1m": mt5.TIMEFRAME_M1,
     "candles5m": mt5.TIMEFRAME_M5,
     "candles15m": mt5.TIMEFRAME_M15,
     "candles1h": mt5.TIMEFRAME_H1,
 }
 
-CANDLE_LIMIT = 200
+CANDLE_LIMITS = {
+    "candles1m": 60,
+    "candles5m": 60,
+    "candles15m": 60,
+    "candles1h": 60,
+}
 
 
 def error_response(message, details=None):
@@ -38,24 +44,72 @@ def error_response(message, details=None):
     )
 
 
+def safe_float(value, default=0):
+    try:
+        number = float(value)
+        return number if number == number else default
+    except Exception:
+        return default
+
+
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def format_candle(rate):
     return {
-        "time": int(rate["time"]),
-        "open": float(rate["open"]),
-        "high": float(rate["high"]),
-        "low": float(rate["low"]),
-        "close": float(rate["close"]),
-        "volume": float(rate["tick_volume"]),
+        "time": safe_int(rate["time"]),
+        "open": safe_float(rate["open"]),
+        "high": safe_float(rate["high"]),
+        "low": safe_float(rate["low"]),
+        "close": safe_float(rate["close"]),
+        "volume": safe_float(rate["tick_volume"]),
     }
 
 
-def get_candles(mt5_symbol, timeframe):
-    rates = mt5.copy_rates_from_pos(mt5_symbol, timeframe, 0, CANDLE_LIMIT)
+def get_candles(mt5_symbol, timeframe_key):
+    timeframe = TIMEFRAME_MAP.get(timeframe_key)
+    limit = CANDLE_LIMITS.get(timeframe_key, 60)
+
+    if timeframe is None:
+        return []
+
+    rates = mt5.copy_rates_from_pos(mt5_symbol, timeframe, 0, limit)
 
     if rates is None:
         return []
 
     return [format_candle(rate) for rate in rates]
+
+
+def get_tick_age_seconds(tick):
+    try:
+        tick_time = safe_float(getattr(tick, "time", 0))
+        now_time = datetime.now().timestamp()
+
+        if tick_time <= 0:
+            return None
+
+        return max(0, round(now_time - tick_time, 2))
+    except Exception:
+        return None
+
+
+def get_tick_time_ms(tick):
+    time_msc = getattr(tick, "time_msc", None)
+
+    if time_msc:
+        return safe_int(time_msc)
+
+    tick_time = safe_float(getattr(tick, "time", 0))
+
+    if tick_time > 0:
+        return safe_int(tick_time * 1000)
+
+    return None
 
 
 def get_tick(app_asset, mt5_symbol, server_name):
@@ -82,36 +136,64 @@ def get_tick(app_asset, mt5_symbol, server_name):
             "error": "Sem tick válido no momento",
         }
 
-    bid = float(tick.bid)
-    ask = float(tick.ask)
+    bid = safe_float(tick.bid)
+    ask = safe_float(tick.ask)
+    last = safe_float(getattr(tick, "last", 0))
+    volume = safe_float(getattr(tick, "volume", 0))
+
     mid = (bid + ask) / 2
     spread = ask - bid
 
-    candles5m = get_candles(mt5_symbol, TIMEFRAME_MAP["candles5m"])
-    candles15m = get_candles(mt5_symbol, TIMEFRAME_MAP["candles15m"])
-    candles1h = get_candles(mt5_symbol, TIMEFRAME_MAP["candles1h"])
+    point = safe_float(getattr(info, "point", 0))
+    spread_points = spread / point if point > 0 else 0
+    spread_percent = (spread / mid) * 100 if mid > 0 else 0
+
+    candles1m = get_candles(mt5_symbol, "candles1m")
+    candles5m = get_candles(mt5_symbol, "candles5m")
+    candles15m = get_candles(mt5_symbol, "candles15m")
+    candles1h = get_candles(mt5_symbol, "candles1h")
+
+    tick_age_seconds = get_tick_age_seconds(tick)
 
     return {
         "asset": app_asset,
         "symbol": mt5_symbol,
         "success": True,
+
         "price": mid,
         "bid": bid,
         "ask": ask,
-        "last": float(tick.last or 0),
+        "last": last,
+
         "spread": spread,
-        "digits": int(info.digits),
-        "volume": float(tick.volume or 0),
+        "spreadPoints": round(spread_points, 2),
+        "spreadPercent": round(spread_percent, 5),
+
+        "digits": safe_int(info.digits),
+        "point": point,
+        "volume": volume,
+
         "time": datetime.fromtimestamp(tick.time).isoformat(),
-        "timeMs": int(tick.time_msc) if hasattr(tick, "time_msc") else None,
+        "timeMs": get_tick_time_ms(tick),
+        "tickAgeSeconds": tick_age_seconds,
+
         "source": "MT5",
         "server": server_name,
         "real": True,
         "simulated": False,
+
         "candles": candles5m,
+        "candles1m": candles1m,
         "candles5m": candles5m,
         "candles15m": candles15m,
         "candles1h": candles1h,
+
+        "candleInfo": {
+            "candles1m": len(candles1m),
+            "candles5m": len(candles5m),
+            "candles15m": len(candles15m),
+            "candles1h": len(candles1h),
+        },
     }
 
 
