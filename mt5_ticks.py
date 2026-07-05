@@ -182,17 +182,33 @@ def get_tick(app_asset, mt5_symbol, server_name):
         "real": True,
         "simulated": False,
 
+        # Compatibilidade antiga
         "candles": candles5m,
+
+        # Aliases rápidos para Scalping
         "candles1m": candles1m,
+        "candlesM1": candles1m,
+        "candlesFast": candles1m,
+        "candles_fast": candles1m,
+
+        # Timeframes principais
         "candles5m": candles5m,
+        "candlesM5": candles5m,
         "candles15m": candles15m,
+        "candlesM15": candles15m,
         "candles1h": candles1h,
+        "candlesH1": candles1h,
 
         "candleInfo": {
             "candles1m": len(candles1m),
+            "candlesM1": len(candles1m),
+            "candlesFast": len(candles1m),
             "candles5m": len(candles5m),
+            "candlesM5": len(candles5m),
             "candles15m": len(candles15m),
+            "candlesM15": len(candles15m),
             "candles1h": len(candles1h),
+            "candlesH1": len(candles1h),
         },
     }
 

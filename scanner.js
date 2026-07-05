@@ -68,8 +68,8 @@ function getProfileRules(profile) {
       warningTickAgeSeconds: 15,
       maxTickAgeSeconds: 30,
 
-      minFastCandlesToWarn: 80,
-      minFastCandlesToBlock: 40,
+      minFastCandlesToWarn: 55,
+      minFastCandlesToBlock: 30,
 
       allowedSetups: ["SCALPING", "REVERSAO"],
     };
@@ -109,8 +109,8 @@ function getProfileRules(profile) {
     warningTickAgeSeconds: 60,
     maxTickAgeSeconds: 120,
 
-    minFastCandlesToWarn: 80,
-    minFastCandlesToBlock: 40,
+    minFastCandlesToWarn: 55,
+    minFastCandlesToBlock: 30,
 
     allowedSetups: ["TENDENCIA", "REVERSAO"],
   };
@@ -125,8 +125,8 @@ function getBaseAssetSafetyRules(asset) {
       maxSpreadPercent: 0.15,
       warningTickAgeSeconds: 60,
       maxTickAgeSeconds: 120,
-      minCandlesToWarn: 100,
-      minCandlesToBlock: 50,
+      minCandlesToWarn: 55,
+      minCandlesToBlock: 30,
     };
   }
 
@@ -136,8 +136,8 @@ function getBaseAssetSafetyRules(asset) {
       maxSpreadPercent: 0.03,
       warningTickAgeSeconds: 60,
       maxTickAgeSeconds: 120,
-      minCandlesToWarn: 100,
-      minCandlesToBlock: 50,
+      minCandlesToWarn: 55,
+      minCandlesToBlock: 30,
     };
   }
 
@@ -147,8 +147,8 @@ function getBaseAssetSafetyRules(asset) {
       maxSpreadPercent: 0.08,
       warningTickAgeSeconds: 60,
       maxTickAgeSeconds: 120,
-      minCandlesToWarn: 100,
-      minCandlesToBlock: 50,
+      minCandlesToWarn: 55,
+      minCandlesToBlock: 30,
     };
   }
 
@@ -163,8 +163,8 @@ function getBaseAssetSafetyRules(asset) {
       maxSpreadPercent: 0.12,
       warningTickAgeSeconds: 60,
       maxTickAgeSeconds: 120,
-      minCandlesToWarn: 100,
-      minCandlesToBlock: 50,
+      minCandlesToWarn: 55,
+      minCandlesToBlock: 30,
     };
   }
 
@@ -173,8 +173,8 @@ function getBaseAssetSafetyRules(asset) {
     maxSpreadPercent: 0.15,
     warningTickAgeSeconds: 60,
     maxTickAgeSeconds: 120,
-    minCandlesToWarn: 100,
-    minCandlesToBlock: 50,
+    minCandlesToWarn: 55,
+    minCandlesToBlock: 30,
   };
 }
 
@@ -211,6 +211,10 @@ function getAssetSafetyRules(asset, profile = "DAY_TRADE") {
 }
 
 function getSpreadPercent(item) {
+  if (item.spreadPercent !== undefined && item.spreadPercent !== null) {
+    return toNumber(item.spreadPercent);
+  }
+
   const price = toNumber(item.price);
   const spread = toNumber(item.spread || Math.abs(toNumber(item.ask) - toNumber(item.bid)));
 
@@ -220,6 +224,10 @@ function getSpreadPercent(item) {
 }
 
 function getTickAgeSeconds(item) {
+  if (item.tickAgeSeconds !== undefined && item.tickAgeSeconds !== null) {
+    return toNumber(item.tickAgeSeconds);
+  }
+
   if (item.timeMs) {
     const ageMs = Date.now() - Number(item.timeMs);
     return Number.isFinite(ageMs) ? Math.max(0, ageMs / 1000) : null;
@@ -238,8 +246,34 @@ function getCandleCount(candles) {
   return Array.isArray(candles) ? candles.length : 0;
 }
 
+function pickCandles(...sets) {
+  return sets.find((set) => Array.isArray(set) && set.length > 0) || [];
+}
+
 function getFastCandles(item) {
-  return item.candles1m || item.candlesM1 || item.candles5m || item.candles || [];
+  return pickCandles(
+    item.candlesFast,
+    item.candles_fast,
+    item.candles1m,
+    item.candlesM1,
+    item.candles_m1,
+    item.m1,
+    item.candles5m,
+    item.candlesM5,
+    item.candles
+  );
+}
+
+function getCandles5m(item) {
+  return pickCandles(item.candles5m, item.candlesM5, item.candles);
+}
+
+function getCandles15m(item) {
+  return pickCandles(item.candles15m, item.candlesM15);
+}
+
+function getCandles1h(item) {
+  return pickCandles(item.candles1h, item.candlesH1);
 }
 
 function getSetupType(analysis) {
@@ -260,10 +294,15 @@ function assessSafety(item, profile = "DAY_TRADE") {
   const spreadPercent = getSpreadPercent(item);
   const tickAgeSeconds = getTickAgeSeconds(item);
 
-  const candlesFastCount = getCandleCount(getFastCandles(item));
-  const candles5mCount = getCandleCount(item.candles5m || item.candles);
-  const candles15mCount = getCandleCount(item.candles15m);
-  const candles1hCount = getCandleCount(item.candles1h);
+  const fastCandles = getFastCandles(item);
+  const candles5m = getCandles5m(item);
+  const candles15m = getCandles15m(item);
+  const candles1h = getCandles1h(item);
+
+  const candlesFastCount = getCandleCount(fastCandles);
+  const candles5mCount = getCandleCount(candles5m);
+  const candles15mCount = getCandleCount(candles15m);
+  const candles1hCount = getCandleCount(candles1h);
 
   const blockedReasons = [];
   const warningReasons = [];
@@ -301,9 +340,7 @@ function assessSafety(item, profile = "DAY_TRADE") {
       `Tick antigo: ${tickAgeSeconds.toFixed(0)}s sem atualização. Limite: ${rules.maxTickAgeSeconds}s.`
     );
   } else if (tickAgeSeconds >= rules.warningTickAgeSeconds) {
-    warningReasons.push(
-      `Tick atrasado: ${tickAgeSeconds.toFixed(0)}s sem atualização.`
-    );
+    warningReasons.push(`Tick atrasado: ${tickAgeSeconds.toFixed(0)}s sem atualização.`);
   }
 
   if (
@@ -327,7 +364,12 @@ function assessSafety(item, profile = "DAY_TRADE") {
       warningReasons.push("Quantidade de candles rápidos abaixo do ideal para scalping.");
     }
 
-    if (!item.candles1m && !item.candlesM1) {
+    if (
+      !Array.isArray(item.candles1m) &&
+      !Array.isArray(item.candlesM1) &&
+      !Array.isArray(item.candlesFast) &&
+      !Array.isArray(item.candles_fast)
+    ) {
       warningReasons.push("Scalping usando candles rápidos aproximados. Ideal ativar M1 no backend.");
     }
   }
@@ -351,6 +393,7 @@ function assessSafety(item, profile = "DAY_TRADE") {
     tickAgeSeconds,
     candleInfo: {
       candlesFast: candlesFastCount,
+      candles1m: candlesFastCount,
       candles5m: candles5mCount,
       candles15m: candles15mCount,
       candles1h: candles1hCount,
@@ -486,22 +529,34 @@ function applySafetyFilter(item, analysis, safety, profileRules) {
 }
 
 function removeHeavyData(item) {
+  const candleInfo = item.safety?.candleInfo || {
+    candlesFast: getCandleCount(getFastCandles(item)),
+    candles1m: getCandleCount(getFastCandles(item)),
+    candles5m: getCandleCount(getCandles5m(item)),
+    candles15m: getCandleCount(getCandles15m(item)),
+    candles1h: getCandleCount(getCandles1h(item)),
+  };
+
   return {
     ...item,
 
     candles: undefined,
     candles1m: undefined,
     candlesM1: undefined,
-    candles5m: undefined,
-    candles15m: undefined,
-    candles1h: undefined,
+    candlesFast: candleInfo.candlesFast,
+    candles_fast: undefined,
 
-    candleInfo: item.safety?.candleInfo || {
-      candlesFast: getCandleCount(getFastCandles(item)),
-      candles5m: getCandleCount(item.candles5m || item.candles),
-      candles15m: getCandleCount(item.candles15m),
-      candles1h: getCandleCount(item.candles1h),
-    },
+    candles5m: candleInfo.candles5m,
+    candlesM5: undefined,
+    candles15m: candleInfo.candles15m,
+    candlesM15: undefined,
+    candles1h: candleInfo.candles1h,
+    candlesH1: undefined,
+
+    tickAgeSeconds: item.safety?.tickAgeSeconds ?? getTickAgeSeconds(item),
+    spreadPercent: item.safety?.spreadPercent ?? getSpreadPercent(item),
+
+    candleInfo,
   };
 }
 
@@ -532,27 +587,75 @@ async function scanMarket(options = {}) {
 
   const radar = marketData
     .map((item) => {
-      const safety = assessSafety(item, profile);
+      const fastCandles = getFastCandles(item);
+      const candles5m = getCandles5m(item);
+      const candles15m = getCandles15m(item);
+      const candles1h = getCandles1h(item);
 
-      const analysis = calculateScore(item, {
-        profile,
-        mode: profile,
+      const safety = assessSafety(
+        {
+          ...item,
+          candlesFast: fastCandles,
+          candles1m: fastCandles,
+          candlesM1: fastCandles,
+          candles5m,
+          candles15m,
+          candles1h,
+        },
+        profile
+      );
 
-        candles1m: item.candles1m || item.candlesM1 || [],
-        candlesM1: item.candlesM1 || item.candles1m || [],
+      const analysis = calculateScore(
+        {
+          ...item,
+          candlesFast: fastCandles,
+          candles1m: fastCandles,
+          candlesM1: fastCandles,
+          candles5m,
+          candles15m,
+          candles1h,
+        },
+        {
+          profile,
+          mode: profile,
 
-        candles5m: item.candles5m || item.candles || [],
-        candles15m: item.candles15m || [],
-        candles1h: item.candles1h || [],
-      });
+          candlesFast: fastCandles,
+          candles_fast: fastCandles,
+          candles1m: fastCandles,
+          candlesM1: fastCandles,
+
+          candles5m,
+          candlesM5: candles5m,
+          candles15m,
+          candlesM15: candles15m,
+          candles1h,
+          candlesH1: candles1h,
+        }
+      );
 
       const safeAnalysis = applySafetyFilter(item, analysis, safety, profileRules);
+
+      const scoreDetails = {
+        ...(safeAnalysis.scoreDetails || {}),
+        candlesFast: safety.candleInfo.candlesFast,
+        candles1m: safety.candleInfo.candlesFast,
+        candles5m: safety.candleInfo.candles5m,
+        candles15m: safety.candleInfo.candles15m,
+        candles1h: safety.candleInfo.candles1h,
+      };
 
       return removeHeavyData({
         ...item,
         ...safeAnalysis,
+        scoreDetails,
         safety,
         profile,
+        candlesFast: safety.candleInfo.candlesFast,
+        candles5m: safety.candleInfo.candles5m,
+        candles15m: safety.candleInfo.candles15m,
+        candles1h: safety.candleInfo.candles1h,
+        tickAgeSeconds: safety.tickAgeSeconds,
+        spreadPercent: safety.spreadPercent,
         profileRules: {
           minTradeScore: profileRules.minTradeScore,
           observeScore: profileRules.observeScore,
