@@ -43,14 +43,14 @@ function isAllowedSetupForProfile(setupType, profile) {
     .trim();
 
   if (profile === "SCALPING") {
-    return setup === "SCALPING" || setup === "REVERSAO";
+    return setup === "SCALPING" || setup === "REVERSAO" || setup === "SMC";
   }
 
   if (profile === "SWING") {
-    return setup === "TENDENCIA" || setup === "REVERSAO";
+    return setup === "TENDENCIA" || setup === "REVERSAO" || setup === "SMC";
   }
 
-  return setup === "TENDENCIA" || setup === "REVERSAO";
+  return setup === "TENDENCIA" || setup === "REVERSAO" || setup === "SMC";
 }
 
 function getProfileRules(profile) {
@@ -71,7 +71,7 @@ function getProfileRules(profile) {
       minFastCandlesToWarn: 55,
       minFastCandlesToBlock: 30,
 
-      allowedSetups: ["SCALPING", "REVERSAO"],
+      allowedSetups: ["SCALPING", "REVERSAO", "SMC"],
     };
   }
 
@@ -92,7 +92,7 @@ function getProfileRules(profile) {
       minFastCandlesToWarn: 50,
       minFastCandlesToBlock: 30,
 
-      allowedSetups: ["TENDENCIA", "REVERSAO"],
+      allowedSetups: ["TENDENCIA", "REVERSAO", "SMC"],
     };
   }
 
@@ -112,7 +112,7 @@ function getProfileRules(profile) {
     minFastCandlesToWarn: 55,
     minFastCandlesToBlock: 30,
 
-    allowedSetups: ["TENDENCIA", "REVERSAO"],
+    allowedSetups: ["TENDENCIA", "REVERSAO", "SMC"],
   };
 }
 
