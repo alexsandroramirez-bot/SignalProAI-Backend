@@ -33,6 +33,10 @@ function normalizeProfile(value) {
   return "DAY_TRADE";
 }
 
+function isTradeDirection(direction) {
+  return direction === "COMPRA" || direction === "VENDA";
+}
+
 function isUpTrend(indicators) {
   return String(indicators?.trend || "").toUpperCase() === "ALTA";
 }
@@ -659,7 +663,6 @@ function calculateScalpingSellScore(indicators, indicators15m, indicators1h, can
   return score;
 }
 
-
 function calculateSmcBuyScore(indicators, indicators15m, indicators1h, candles) {
   let score = 40;
 
@@ -972,7 +975,6 @@ function capScalpingScore(
   return finalScore;
 }
 
-
 function capSmcScore(score, direction, indicators, indicators15m, indicators1h, candles) {
   let finalScore = score;
 
@@ -1035,6 +1037,323 @@ function capSmcScore(score, direction, indicators, indicators15m, indicators1h, 
 
 function normalizeScore(score) {
   return Math.round(clamp(score, 40, 96));
+}
+
+function normalizeDetailScore(score) {
+  return Math.round(clamp(score, 0, 100));
+}
+
+function getProfileOpportunityThresholds(profile) {
+  if (profile === "SCALPING") {
+    return {
+      observe: 68,
+      preparing: 76,
+      entry: 86,
+    };
+  }
+
+  if (profile === "SWING") {
+    return {
+      observe: 78,
+      preparing: 85,
+      entry: 90,
+    };
+  }
+
+  return {
+    observe: 72,
+    preparing: 80,
+    entry: 88,
+  };
+}
+
+function getBiasVotes(indicators, weight = 1) {
+  let bullish = 0;
+  let bearish = 0;
+
+  if (isUpTrend(indicators)) bullish += 2 * weight;
+  if (isDownTrend(indicators)) bearish += 2 * weight;
+
+  if (isBullishEma(indicators)) bullish += 2 * weight;
+  if (isBearishEma(indicators)) bearish += 2 * weight;
+
+  if (getMacdSignal(indicators) === "COMPRA") bullish += 1 * weight;
+  if (getMacdSignal(indicators) === "VENDA") bearish += 1 * weight;
+
+  if (indicators?.bosBullish || indicators?.structure === "ALTA") bullish += 1 * weight;
+  if (indicators?.bosBearish || indicators?.structure === "BAIXA") bearish += 1 * weight;
+
+  if (indicators?.liquidityBullish || indicators?.orderBlockBullish || indicators?.fvgBullish) {
+    bullish += 1 * weight;
+  }
+
+  if (indicators?.liquidityBearish || indicators?.orderBlockBearish || indicators?.fvgBearish) {
+    bearish += 1 * weight;
+  }
+
+  return { bullish, bearish };
+}
+
+function getMarketBias(indicators, indicatorsFast, indicators15m, indicators1h, profile) {
+  const fastWeight = profile === "SCALPING" ? 1.4 : 0.7;
+  const mainWeight = profile === "SCALPING" ? 1.2 : 1.4;
+  const m15Weight = profile === "SCALPING" ? 0.9 : 1.3;
+  const h1Weight = profile === "SCALPING" ? 0.5 : 1.2;
+
+  const fast = getBiasVotes(indicatorsFast, fastWeight);
+  const main = getBiasVotes(indicators, mainWeight);
+  const m15 = getBiasVotes(indicators15m, m15Weight);
+  const h1 = getBiasVotes(indicators1h, h1Weight);
+
+  const bullish = fast.bullish + main.bullish + m15.bullish + h1.bullish;
+  const bearish = fast.bearish + main.bearish + m15.bearish + h1.bearish;
+  const diff = bullish - bearish;
+
+  let bias = "LATERAL";
+
+  if (diff >= 3) bias = "ALTA";
+  if (diff <= -3) bias = "BAIXA";
+
+  return {
+    bias,
+    bullishScore: Math.round(bullish),
+    bearishScore: Math.round(bearish),
+    confidence: Math.round(clamp(50 + Math.abs(diff) * 5, 0, 100)),
+  };
+}
+
+function getEntryType(candidate, indicators, indicatorsFast, candles, candlesFast, profile) {
+  const direction = candidate?.direction;
+  const setupType = candidate?.setupType;
+
+  if (setupType === "SMC") return "SMC";
+
+  if (setupType === "REVERSAO") {
+    if (
+      (direction === "COMPRA" && indicators?.liquidityBullish) ||
+      (direction === "VENDA" && indicators?.liquidityBearish)
+    ) {
+      return "REVERSAO_LIQUIDEZ";
+    }
+
+    return "REVERSAO";
+  }
+
+  if (setupType === "SCALPING") {
+    const rangeFast = getRangePercent(candlesFast, 12);
+    const fastMove = getMovePercent(candlesFast, 5);
+
+    if (rangeFast > 0 && rangeFast < 0.18) return "SCALPING_RANGE";
+
+    if (direction === "COMPRA" && fastMove > 0.12) return "ROMPIMENTO";
+    if (direction === "VENDA" && fastMove < -0.12) return "ROMPIMENTO";
+
+    if (
+      (direction === "COMPRA" && (hasBullishRejection(candlesFast) || indicatorsFast?.bullishRejection)) ||
+      (direction === "VENDA" && (hasBearishRejection(candlesFast) || indicatorsFast?.bearishRejection))
+    ) {
+      return "PULLBACK";
+    }
+
+    return "SCALPING";
+  }
+
+  if (setupType === "TENDENCIA") {
+    if (
+      (direction === "COMPRA" && (indicators?.bosBullish || indicators?.structure === "ALTA")) ||
+      (direction === "VENDA" && (indicators?.bosBearish || indicators?.structure === "BAIXA"))
+    ) {
+      return "ROMPIMENTO";
+    }
+
+    if (
+      (direction === "COMPRA" && isNearSupport(candles, 0.45)) ||
+      (direction === "VENDA" && isNearResistance(candles, 0.45))
+    ) {
+      return "PULLBACK";
+    }
+
+    return "RETESTE";
+  }
+
+  return "AGUARDAR";
+}
+
+function getOpportunityStatus(candidate, finalDirection, profile) {
+  const thresholds = getProfileOpportunityThresholds(profile);
+  const score = toNumber(candidate?.score);
+
+  if (!candidate || score < thresholds.observe) return "AGUARDAR";
+
+  if (isTradeDirection(finalDirection) && score >= thresholds.entry) {
+    return "ENTRADA";
+  }
+
+  if (score >= thresholds.preparing) {
+    return "PREPARANDO";
+  }
+
+  return "OBSERVAR";
+}
+
+function getAiReason({ candidate, marketBias, entryType, indicators, indicatorsFast }) {
+  const setupType = candidate?.setupType || "AGUARDAR";
+  const direction = candidate?.direction || "AGUARDAR";
+
+  if (setupType === "AGUARDAR") {
+    return "Nenhum setup com força suficiente no momento.";
+  }
+
+  const reasons = [];
+
+  if (marketBias?.bias === "ALTA") reasons.push("viés principal de alta");
+  if (marketBias?.bias === "BAIXA") reasons.push("viés principal de baixa");
+  if (marketBias?.bias === "LATERAL") reasons.push("mercado lateral ou sem direção limpa");
+
+  if (entryType === "ROMPIMENTO") reasons.push("rompimento de estrutura/pivô recente");
+  if (entryType === "PULLBACK") reasons.push("pullback em região técnica");
+  if (entryType === "RETESTE") reasons.push("possível reteste de região rompida");
+  if (entryType === "REVERSAO") reasons.push("possível reversão após movimento esticado");
+  if (entryType === "REVERSAO_LIQUIDEZ") reasons.push("varredura de liquidez com tentativa de reversão");
+  if (entryType === "SCALPING_RANGE") reasons.push("scalping em faixa curta de preço");
+  if (entryType === "SMC") reasons.push("confluência de Smart Money");
+
+  if (getMacdSignal(indicators) === direction) reasons.push(`MACD a favor da ${direction.toLowerCase()}`);
+  if (getMacdSignal(indicatorsFast) === direction) reasons.push(`M1/M5 confirmando ${direction.toLowerCase()}`);
+
+  if (indicators?.liquidityBullish && direction === "COMPRA") reasons.push("liquidez compradora detectada");
+  if (indicators?.liquidityBearish && direction === "VENDA") reasons.push("liquidez vendedora detectada");
+
+  if (indicators?.fvgBullish && direction === "COMPRA") reasons.push("FVG comprador recente");
+  if (indicators?.fvgBearish && direction === "VENDA") reasons.push("FVG vendedor recente");
+
+  if (indicators?.orderBlockBullish && direction === "COMPRA") reasons.push("order block comprador");
+  if (indicators?.orderBlockBearish && direction === "VENDA") reasons.push("order block vendedor");
+
+  return reasons.length
+    ? `${direction}: ${reasons.join(", ")}.`
+    : `${direction}: setup ${setupType} com score em desenvolvimento.`;
+}
+
+function getMissingConfirmation({ status, candidate, entryType, marketBias }) {
+  const direction = candidate?.direction || "AGUARDAR";
+  const score = toNumber(candidate?.score);
+
+  if (status === "ENTRADA") {
+    return "Entrada validada pelo score e pelas confirmações principais.";
+  }
+
+  if (status === "AGUARDAR") {
+    return "Aguardando score mínimo e direção mais clara.";
+  }
+
+  if (status === "OBSERVAR") {
+    return "Ativo começou a ficar interessante, mas ainda precisa de mais confluência.";
+  }
+
+  if (entryType === "ROMPIMENTO") {
+    return `Aguardando candle confirmar o rompimento e manter força para ${direction}.`;
+  }
+
+  if (entryType === "PULLBACK") {
+    return `Aguardando pullback terminar e candle de confirmação para ${direction}.`;
+  }
+
+  if (entryType === "RETESTE") {
+    return `Aguardando reteste respeitar a região rompida para ${direction}.`;
+  }
+
+  if (entryType === "REVERSAO" || entryType === "REVERSAO_LIQUIDEZ") {
+    return `Aguardando confirmação de reversão para ${direction}, sem voltar contra a estrutura.`;
+  }
+
+  if (entryType === "SCALPING_RANGE") {
+    return `Aguardando rompimento curto do range ou rejeição clara para ${direction}.`;
+  }
+
+  if (entryType === "SMC") {
+    return `Aguardando confirmação SMC adicional para ${direction}, como CHOCH/BOS, FVG ou rejeição.`;
+  }
+
+  if (marketBias?.bias === "LATERAL") {
+    return "Mercado lateral; precisa romper ou rejeitar uma região com clareza.";
+  }
+
+  return `Score atual ${score}; falta confirmação para virar entrada.`;
+}
+
+function buildAiAnalysis({
+  ticker,
+  candidate,
+  finalDirection,
+  score,
+  profile,
+  indicators,
+  indicatorsFast,
+  indicators15m,
+  indicators1h,
+  candles,
+  candlesFast,
+}) {
+  const marketBias = getMarketBias(indicators, indicatorsFast, indicators15m, indicators1h, profile);
+  const entryType = getEntryType(candidate, indicators, indicatorsFast, candles, candlesFast, profile);
+  const opportunityStatus = getOpportunityStatus(candidate, finalDirection, profile);
+
+  const sr = getSupportResistance(candles, 30);
+  const currentPrice = toNumber(ticker?.price) || sr.close || toNumber(indicators?.price);
+
+  let entryZone = currentPrice;
+  let invalidation = 0;
+  let targetZone = 0;
+
+  if (candidate?.direction === "COMPRA") {
+    invalidation = sr.support || 0;
+    targetZone = sr.resistance || 0;
+  }
+
+  if (candidate?.direction === "VENDA") {
+    invalidation = sr.resistance || 0;
+    targetZone = sr.support || 0;
+  }
+
+  const aiReason = getAiReason({
+    candidate,
+    marketBias,
+    entryType,
+    indicators,
+    indicatorsFast,
+  });
+
+  const missingConfirmation = getMissingConfirmation({
+    status: opportunityStatus,
+    candidate,
+    entryType,
+    marketBias,
+  });
+
+  return {
+    opportunityStatus,
+    marketBias: marketBias.bias,
+    marketBiasConfidence: marketBias.confidence,
+    bullishBiasScore: marketBias.bullishScore,
+    bearishBiasScore: marketBias.bearishScore,
+
+    entryType,
+    aiDirection: candidate?.direction || "AGUARDAR",
+    aiScore: normalizeDetailScore(score),
+
+    entryZone,
+    invalidation,
+    targetZone,
+
+    aiReason,
+    reason: aiReason,
+    missingConfirmation,
+
+    profile,
+    selectedSetup: candidate?.setupType || "AGUARDAR",
+    selectedDirection: candidate?.direction || "AGUARDAR",
+  };
 }
 
 function createCandidate({
@@ -1159,6 +1478,41 @@ function getCandleCount(candles) {
   return Array.isArray(candles) ? candles.length : 0;
 }
 
+function buildInsufficientDataAnalysis({
+  ticker,
+  profile,
+  indicators,
+  indicatorsFast,
+  indicators15m,
+  indicators1h,
+  candlesFastCount,
+  candles5mCount,
+  candles15mCount,
+  candles1hCount,
+}) {
+  return {
+    opportunityStatus: "AGUARDAR",
+    marketBias: "INDEFINIDA",
+    marketBiasConfidence: 0,
+    entryType: "AGUARDAR",
+    aiDirection: "AGUARDAR",
+    aiScore: 55,
+    entryZone: toNumber(ticker?.price),
+    invalidation: 0,
+    targetZone: 0,
+    aiReason: "Poucos candles para validar o setup com segurança.",
+    reason: "Poucos candles para validar o setup com segurança.",
+    missingConfirmation: "Aguardando histórico suficiente de candles nos timeframes principais.",
+    profile,
+    selectedSetup: "AGUARDAR",
+    selectedDirection: "AGUARDAR",
+    candlesFast: candlesFastCount,
+    candles5m: candles5mCount,
+    candles15m: candles15mCount,
+    candles1h: candles1hCount,
+  };
+}
+
 function calculateScore(ticker, timeframes = {}) {
   const profile = normalizeProfile(timeframes.profile || timeframes.mode || ticker?.profile);
 
@@ -1178,6 +1532,19 @@ function calculateScore(ticker, timeframes = {}) {
   const candles1hCount = getCandleCount(candles1h);
 
   if (candles5mCount < 50 || candles15mCount < 50 || candles1hCount < 50) {
+    const aiAnalysis = buildInsufficientDataAnalysis({
+      ticker,
+      profile,
+      indicators,
+      indicatorsFast,
+      indicators15m,
+      indicators1h,
+      candlesFastCount,
+      candles5mCount,
+      candles15mCount,
+      candles1hCount,
+    });
+
     return {
       indicators,
       indicatorsFast,
@@ -1189,6 +1556,12 @@ function calculateScore(ticker, timeframes = {}) {
       setupType: "AGUARDAR",
       strategy: "AGUARDAR",
       profile,
+
+      opportunityStatus: aiAnalysis.opportunityStatus,
+      marketBias: aiAnalysis.marketBias,
+      entryType: aiAnalysis.entryType,
+      aiAnalysis,
+
       scoreDetails: {
         reason: "Poucos candles para validar o setup.",
         setupType: "AGUARDAR",
@@ -1198,6 +1571,11 @@ function calculateScore(ticker, timeframes = {}) {
         candles5m: candles5mCount,
         candles15m: candles15mCount,
         candles1h: candles1hCount,
+        aiAnalysis,
+        opportunityStatus: aiAnalysis.opportunityStatus,
+        marketBias: aiAnalysis.marketBias,
+        entryType: aiAnalysis.entryType,
+        missingConfirmation: aiAnalysis.missingConfirmation,
       },
     };
   }
@@ -1352,6 +1730,20 @@ function calculateScore(ticker, timeframes = {}) {
   const setupType = direction === "AGUARDAR" ? "AGUARDAR" : bestCandidate.setupType;
   const strategy = setupType;
 
+  const aiAnalysis = buildAiAnalysis({
+    ticker,
+    candidate: bestCandidate,
+    finalDirection: direction,
+    score,
+    profile,
+    indicators,
+    indicatorsFast,
+    indicators15m,
+    indicators1h,
+    candles,
+    candlesFast,
+  });
+
   return {
     indicators,
     indicatorsFast,
@@ -1365,6 +1757,11 @@ function calculateScore(ticker, timeframes = {}) {
     strategy,
     profile,
 
+    opportunityStatus: aiAnalysis.opportunityStatus,
+    marketBias: aiAnalysis.marketBias,
+    entryType: aiAnalysis.entryType,
+    aiAnalysis,
+
     scoreDetails: {
       profile,
       setupType,
@@ -1376,20 +1773,30 @@ function calculateScore(ticker, timeframes = {}) {
       finalScore: score,
       difference: bestCandidate.difference,
 
-      buyScore: Math.round(trendBuyScore),
-      sellScore: Math.round(trendSellScore),
+      opportunityStatus: aiAnalysis.opportunityStatus,
+      marketBias: aiAnalysis.marketBias,
+      marketBiasConfidence: aiAnalysis.marketBiasConfidence,
+      entryType: aiAnalysis.entryType,
+      aiDirection: aiAnalysis.aiDirection,
+      aiScore: aiAnalysis.aiScore,
+      aiReason: aiAnalysis.aiReason,
+      missingConfirmation: aiAnalysis.missingConfirmation,
+      aiAnalysis,
 
-      trendBuyScore: Math.round(trendBuyScore),
-      trendSellScore: Math.round(trendSellScore),
+      buyScore: normalizeDetailScore(trendBuyScore),
+      sellScore: normalizeDetailScore(trendSellScore),
 
-      reversalBuyScore: Math.round(reversalBuyScore),
-      reversalSellScore: Math.round(reversalSellScore),
+      trendBuyScore: normalizeDetailScore(trendBuyScore),
+      trendSellScore: normalizeDetailScore(trendSellScore),
 
-      scalpingBuyScore: Math.round(scalpingBuyScore),
-      scalpingSellScore: Math.round(scalpingSellScore),
+      reversalBuyScore: normalizeDetailScore(reversalBuyScore),
+      reversalSellScore: normalizeDetailScore(reversalSellScore),
 
-      smcBuyScore: Math.round(smcBuyScore),
-      smcSellScore: Math.round(smcSellScore),
+      scalpingBuyScore: normalizeDetailScore(scalpingBuyScore),
+      scalpingSellScore: normalizeDetailScore(scalpingSellScore),
+
+      smcBuyScore: normalizeDetailScore(smcBuyScore),
+      smcSellScore: normalizeDetailScore(smcSellScore),
 
       candidates,
 
